@@ -33,49 +33,10 @@ struct Node {
 
 #[derive(Debug)]
 struct Leaf {
-    path_parameters: Py<PyAny>,
-    asgi_handlers: HashMap<String, Py<ASGIApp>>,
     is_asgi: bool,
     static_path: Option<String>,
-}
-
-fn split_path(path: &str) -> impl Iterator<Item = &'_ str> {
-    path.split('/').filter(|s| !s.is_empty())
-}
-
-#[derive(Debug, FromPyObject)]
-struct BaseRoute<'a> {
-    path: &'a str,
-    path_parameters: &'a PyAny,
-}
-
-#[derive(Debug, FromPyObject)]
-struct HttpRoute<'a> {
-    route_handler_map: StdHashMap<&'a str, (&'a PyAny, &'a PyAny)>,
-}
-
-#[derive(Debug, FromPyObject)]
-struct SingleHandlerRoute<'a> {
-    #[pyo3(attribute("route_handler"))]
-    handler: &'a PyAny,
-}
-
-#[derive(Debug, FromPyObject)]
-struct StarliteApp {
-    static_paths: Py<PyAny>,
-    build_route_middleware_stack: Py<PyAny>,
-}
-
-impl StarliteApp {
-    fn path_in_static(&self, py: Python<'_>, path: &str) -> PyResult<bool> {
-        self.static_paths.as_ref(py).contains(path)
-    }
-
-    fn build_route(&self, route: &PyAny, handler: &PyAny) -> PyResult<Py<PyAny>> {
-        let py = route.py();
-        self.build_route_middleware_stack
-            .call1(py, (route, handler))
-    }
+    path_parameters: Py<PyAny>,
+    asgi_handlers: HashMap<HandlerType, Py<ASGIApp>>,
 }
 
 impl Leaf {
@@ -87,6 +48,38 @@ impl Leaf {
             static_path: None,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum HandlerType {
+    Asgi,
+    Websocket,
+    // HTTP methods taken from starlite.types.Method
+    HttpGet,
+    HttpPost,
+    HttpDelete,
+    HttpPatch,
+    HttpPut,
+    HttpHead,
+    HttpOther(String),
+}
+
+impl HandlerType {
+    fn from_http_method(method: &str) -> Self {
+        match method {
+            "GET" => Self::HttpGet,
+            "POST" => Self::HttpPost,
+            "DELETE" => Self::HttpDelete,
+            "PATCH" => Self::HttpPatch,
+            "PUT" => Self::HttpPut,
+            "HEAD" => Self::HttpHead,
+            _ => Self::HttpOther(String::from(method)),
+        }
+    }
+}
+
+fn split_path(path: &str) -> impl Iterator<Item = &'_ str> {
+    path.split('/').filter(|s| !s.is_empty())
 }
 
 impl RouteMap {
@@ -143,21 +136,22 @@ impl RouteMap {
             if route.is_instance(route_types.http.as_ref(p))? {
                 let http_route: HttpRoute<'_> = route.extract()?;
                 for (method, (handler, _)) in http_route.route_handler_map {
-                    leaf.asgi_handlers
-                        .insert(String::from(method), self.app.build_route(route, handler)?);
+                    leaf.asgi_handlers.insert(
+                        HandlerType::from_http_method(method),
+                        self.app.build_route(route, handler)?,
+                    );
                 }
             } else if route.is_instance(route_types.websocket.as_ref(p))? {
                 let SingleHandlerRoute { handler } = route.extract()?;
-                // TODO: Can do better than a a string
                 leaf.asgi_handlers.insert(
-                    String::from("websocket"),
+                    HandlerType::Websocket,
                     self.app.build_route(route, handler)?,
                 );
             } else if route.is_instance(route_types.asgi.as_ref(p))? {
                 let SingleHandlerRoute { handler } = route.extract()?;
                 // TODO: Can do better than a a string
                 leaf.asgi_handlers
-                    .insert(String::from("asgi"), self.app.build_route(route, handler)?);
+                    .insert(HandlerType::Asgi, self.app.build_route(route, handler)?);
                 leaf.is_asgi = true;
             } else {
                 return Err(PyTypeError::new_err("Unknown route type"));
@@ -183,18 +177,20 @@ impl RouteMap {
         )?;
 
         let handler: Option<&Py<ASGIApp>> = if leaf.is_asgi {
-            leaf.asgi_handlers.get("asgi")
+            leaf.asgi_handlers.get(&HandlerType::Asgi)
         } else {
             let scope_type: &str = scope.get_item(pyo3::intern!(py, "type"))?.extract()?;
             if scope_type == "http" {
                 let scope_method: &str = scope.get_item(pyo3::intern!(py, "method"))?.extract()?;
-                let handler = leaf.asgi_handlers.get(scope_method);
+                let handler = leaf
+                    .asgi_handlers
+                    .get(&HandlerType::from_http_method(scope_method));
                 if handler.is_none() {
                     return Err(exceptions::MethodNotAllowedException::new_err(()));
                 }
                 handler
             } else {
-                leaf.asgi_handlers.get("websocket")
+                leaf.asgi_handlers.get(&HandlerType::Websocket)
             }
         };
         let handler: Py<ASGIApp> = handler
@@ -243,6 +239,41 @@ impl RouteMap {
 
     fn parse_path_params(&self, params: &PyAny, values: &PyList) -> PyResult<Py<PyAny>> {
         self.path_param_parser.call1(params.py(), (params, values))
+    }
+}
+
+#[derive(Debug, FromPyObject)]
+struct BaseRoute<'a> {
+    path: &'a str,
+    path_parameters: &'a PyAny,
+}
+
+#[derive(Debug, FromPyObject)]
+struct HttpRoute<'a> {
+    route_handler_map: StdHashMap<&'a str, (&'a PyAny, &'a PyAny)>,
+}
+
+#[derive(Debug, FromPyObject)]
+struct SingleHandlerRoute<'a> {
+    #[pyo3(attribute("route_handler"))]
+    handler: &'a PyAny,
+}
+
+#[derive(Debug, FromPyObject)]
+struct StarliteApp {
+    static_paths: Py<PyAny>,
+    build_route_middleware_stack: Py<PyAny>,
+}
+
+impl StarliteApp {
+    fn path_in_static(&self, py: Python<'_>, path: &str) -> PyResult<bool> {
+        self.static_paths.as_ref(py).contains(path)
+    }
+
+    fn build_route(&self, route: &PyAny, handler: &PyAny) -> PyResult<Py<PyAny>> {
+        let py = route.py();
+        self.build_route_middleware_stack
+            .call1(py, (route, handler))
     }
 }
 
