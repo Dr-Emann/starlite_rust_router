@@ -1,0 +1,13 @@
+[package]
+name = "starlite_router"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "starlite_router"
+crate-type = ["cdylib"]
+
+[dependencies]
+ahash = { version = "0.7.6" }
+pyo3 = { version = "0.16.5", features = ["extension-module", "abi3-py37"] }
