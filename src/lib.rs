@@ -1,8 +1,8 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyMapping, PySequence, PyType};
 
-use ahash::AHashMap as HashMap;
 use ahash::AHashSet as HashSet;
+use ahash::{AHashMap as HashMap, AHashSet};
 use pyo3::exceptions::PyTypeError;
 use std::collections::HashMap as StdHashMap;
 
@@ -82,32 +82,42 @@ fn split_path(path: &str) -> impl Iterator<Item = &'_ str> {
     path.split('/').filter(|s| !s.is_empty())
 }
 
+fn build_param_set<'a>(
+    path_parameters: &[&'a PyAny],
+    param_strings: &mut HashSet<&'a str>,
+) -> PyResult<()> {
+    param_strings.clear();
+    param_strings.reserve(path_parameters.len());
+    for &path_param in path_parameters {
+        let full_name: &str = path_param
+            .get_item(pyo3::intern!(path_param.py(), "full"))?
+            .extract()?;
+        param_strings.insert(full_name);
+    }
+    Ok(())
+}
+
 impl RouteMap {
     fn add_routes_(&mut self, items: &PySequence) -> PyResult<()> {
         let p = items.py();
+        let mut param_strings = HashSet::new();
         for route in items.iter()? {
             let route: &PyAny = route?;
             let base: BaseRoute = route.extract()?;
             let path = base.path;
             let path_parameters: Vec<&PyAny> = base.path_parameters.extract()?;
 
-            let mut param_set = HashSet::new();
             let in_static = self.app.path_in_static(p, path)?;
             let leaf: &mut Leaf = if !path_parameters.is_empty() || in_static {
-                param_set.clear();
-                for &path_param in &path_parameters {
-                    let full_name: &str = path_param
-                        .get_item(pyo3::intern!(items.py(), "full"))?
-                        .extract()?;
-                    param_set.insert(full_name);
-                }
+                build_param_set(&path_parameters, &mut param_strings)?;
 
                 let mut node = &mut self.param_routes;
                 for s in split_path(path) {
-                    node = if s.starts_with('{')
+                    let is_placeholder = s.starts_with('{')
                         && s.ends_with('}')
-                        && param_set.contains(&s[1..s.len() - 1])
-                    {
+                        && param_strings.contains(&s[1..s.len() - 1]);
+
+                    node = if is_placeholder {
                         node.placeholder_child.get_or_insert_with(Default::default)
                     } else {
                         node.children
@@ -115,6 +125,7 @@ impl RouteMap {
                             .or_insert_with(Default::default)
                     };
                 }
+                // Found where the leaf should be, get it, or add a new one
                 node.leaf
                     .get_or_insert_with(|| Leaf::new(base.path_parameters.into()))
             } else {
