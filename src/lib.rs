@@ -26,7 +26,8 @@ struct RouteMap {
 
 #[derive(Debug, Default)]
 struct Node {
-    children: HashMap<Segment, Node>,
+    children: HashMap<String, Node>,
+    placeholder_child: Option<Box<Node>>,
     leaf: Option<Leaf>,
 }
 
@@ -36,12 +37,6 @@ struct Leaf {
     asgi_handlers: HashMap<String, Py<ASGIApp>>,
     is_asgi: bool,
     static_path: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum Segment {
-    Literal(String),
-    Placeholder,
 }
 
 fn split_path(path: &str) -> impl Iterator<Item = &'_ str> {
@@ -116,15 +111,16 @@ impl RouteMap {
 
                 let mut node = &mut self.param_routes;
                 for s in split_path(path) {
-                    let segment = if s.starts_with('{')
+                    node = if s.starts_with('{')
                         && s.ends_with('}')
                         && param_set.contains(&s[1..s.len() - 1])
                     {
-                        Segment::Placeholder
+                        node.placeholder_child.get_or_insert_with(Default::default)
                     } else {
-                        Segment::Literal(String::from(s))
+                        node.children
+                            .entry(String::from(s))
+                            .or_insert_with(Default::default)
                     };
-                    node = node.children.entry(segment).or_default();
                 }
                 node.leaf
                     .get_or_insert_with(|| Leaf::new(base.path_parameters.into()))
@@ -213,25 +209,20 @@ impl RouteMap {
         let mut params = Vec::new();
         let mut node = &self.param_routes;
         for component in split_path(path) {
-            // TODO: Allow search by borrow
-            if let Some(child) = node
-                .children
-                .get(&Segment::Literal(String::from(component)))
-            {
+            if let Some(child) = node.children.get(component) {
                 node = child;
                 continue;
             }
-            // TODO: Why is this even in the same hashmap?
-            if let Some(child) = node.children.get(&Segment::Placeholder) {
+            if let Some(child) = &node.placeholder_child {
                 node = child;
                 params.push(component);
                 continue;
             }
-            if let Some(Leaf {
-                static_path: Some(static_path),
-                ..
-            }) = &node.leaf
-            {
+            let static_path = node
+                .leaf
+                .as_ref()
+                .and_then(|leaf| leaf.static_path.as_deref());
+            if let Some(static_path) = static_path {
                 if static_path != "/" {
                     let old_scope_path: &str = scope.get_item(key_path)?.extract()?;
                     let new_scope_path = old_scope_path.replace(static_path, "");
