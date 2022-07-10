@@ -113,6 +113,8 @@ impl RouteMap {
 
                 let mut node = &mut self.param_routes;
                 for s in split_path(path) {
+                    // Could we just assume a path segment that starts and ends
+                    // with `{}` is a placeholder?
                     let is_placeholder = s.starts_with('{')
                         && s.ends_with('}')
                         && param_strings.contains(&s[1..s.len() - 1]);
