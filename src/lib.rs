@@ -1,8 +1,8 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyMapping, PySequence, PyType};
 
+use ahash::AHashMap as HashMap;
 use ahash::AHashSet as HashSet;
-use ahash::{AHashMap as HashMap, AHashSet};
 use pyo3::exceptions::PyTypeError;
 use std::collections::HashMap as StdHashMap;
 
