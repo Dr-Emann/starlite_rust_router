@@ -162,7 +162,6 @@ impl RouteMap {
                 );
             } else if route.is_instance(route_types.asgi.as_ref(p))? {
                 let SingleHandlerRoute { handler } = route.extract()?;
-                // TODO: Can do better than a a string
                 leaf.asgi_handlers
                     .insert(HandlerType::Asgi, self.app.build_route(route, handler)?);
                 leaf.is_asgi = true;
